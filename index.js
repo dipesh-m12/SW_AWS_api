@@ -219,6 +219,8 @@ const io = socket(server, {
     credentials: true,
   },
   transports: ["websocket"],
+  pingInterval: 20000, // Consider a shorter interval for more frequent checks
+  pingTimeout: 50000, // Adjust to a reasonable timeout (ensure it's longer than the interval)
 });
 
 io.on("connection", (socket) => {
