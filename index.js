@@ -103,6 +103,18 @@ const activeConnectionsGauge = new client.Gauge({
   help: "Current number of active connections",
 });
 
+const cacheHitCounter = new client.Counter({
+  name: "cache_hits_total",
+  help: "Total number of cache hits",
+  labelNames: ["route"],
+});
+
+const cacheMissCounter = new client.Counter({
+  name: "cache_misses_total",
+  help: "Total number of cache misses",
+  labelNames: ["route"],
+});
+
 app.get("/metrics", async (req, res) => {
   res.setHeader("Content-Type", client.register.contentType);
   const metrics = await client.register.metrics();
@@ -149,9 +161,11 @@ app.post("/create-order", async (req, res) => {
       const cachedData = await redisClient.get(key);
       if (cachedData) {
         data = JSON.parse(cachedData);
+        cacheHitCounter.labels(req.path).inc(); // Increment cache hit counter
         console.log("keys Cache hit");
       } else {
         console.log("keys Cache miss");
+        cacheMissCounter.labels(req.path).inc(); // Increment cache miss counter
         // Fetch from database if not in cache
         data = await keysModel.findOne({ canteenId });
         console.log("Cached key", data);
@@ -266,3 +280,5 @@ io.on("connection", (socket) => {
     }
   });
 });
+
+module.exports = { cacheHitCounter, cacheMissCounter };

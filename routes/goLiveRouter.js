@@ -1,6 +1,7 @@
 const redis = require("redis");
 const redisClient = redis.createClient({});
-
+const cacheHitCounter = require("../index");
+const cacheMissCounter = require("../index");
 redisClient.connect().catch(console.error); // Ensure the client is connected
 redisClient.on("error", (err) => {
   console.error("Redis error: ", err);
@@ -49,9 +50,11 @@ router.post("/getStatus", async (req, res, next) => {
 
     if (cachedStatus) {
       console.log("Cache hit : Live status ");
+      cacheHitCounter.labels(req.path).inc(); // Increment cache hit counter
       return res.status(200).json({ status: JSON.parse(cachedStatus) });
     } else {
       console.log("Cache miss : Live status");
+      cacheMissCounter.labels(req.path).inc(); // Increment cache miss counter
       return res.status(404).send(null);
     }
   } catch (e) {

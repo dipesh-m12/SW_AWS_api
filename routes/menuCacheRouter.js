@@ -1,6 +1,8 @@
 const { ok } = require("assert");
 const redis = require("redis");
 const redisClient = redis.createClient({});
+const cacheHitCounter = require("../index");
+const cacheMissCounter = require("../index");
 
 redisClient.connect().catch(console.error); // Ensure the client is connected
 redisClient.on("error", (err) => {
@@ -50,9 +52,11 @@ router.post("/getFromCanteenId", async (req, res, next) => {
 
     if (cachedData) {
       console.log(`Cache hit for menu ${canteenId}`);
+      cacheHitCounter.labels(req.path).inc(); // Increment cache hit counter
       return res.json({ data: JSON.parse(cachedData) });
     } else {
       console.log("Cache miss");
+      cacheMissCounter.labels(req.path).inc(); // Increment cache miss counter
       return res.status(404).send(null);
     }
   } catch (error) {
