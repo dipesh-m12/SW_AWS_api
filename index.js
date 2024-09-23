@@ -11,6 +11,7 @@ const statusCacheRouter = require("./routes/goLiveRouter");
 const redis = require("redis");
 const client = require("prom-client");
 const responseTime = require("response-time");
+const { cacheHitCounter, cacheMissCounter } = require("./cacheMetrics");
 
 const redisClient = redis.createClient({});
 redisClient.connect().catch(console.error); // Ensure the client is connected
@@ -103,17 +104,17 @@ const activeConnectionsGauge = new client.Gauge({
   help: "Current number of active connections",
 });
 
-const cacheHitCounter = new client.Counter({
-  name: "cache_hits_total",
-  help: "Total number of cache hits",
-  labelNames: ["route"],
-});
+// const cacheHitCounter = new client.Counter({
+//   name: "cache_hits_total",
+//   help: "Total number of cache hits",
+//   labelNames: ["route"],
+// });
 
-const cacheMissCounter = new client.Counter({
-  name: "cache_misses_total",
-  help: "Total number of cache misses",
-  labelNames: ["route"],
-});
+// const cacheMissCounter = new client.Counter({
+//   name: "cache_misses_total",
+//   help: "Total number of cache misses",
+//   labelNames: ["route"],
+// });
 
 app.get("/metrics", async (req, res) => {
   res.setHeader("Content-Type", client.register.contentType);
@@ -280,5 +281,3 @@ io.on("connection", (socket) => {
     }
   });
 });
-
-module.exports = { cacheHitCounter, cacheMissCounter };

@@ -1,7 +1,6 @@
 const redis = require("redis");
 const redisClient = redis.createClient({});
-const cacheHitCounter = require("../index");
-const cacheMissCounter = require("../index");
+const { cacheHitCounter, cacheMissCounter } = require("../cacheMetrics");
 redisClient.connect().catch(console.error); // Ensure the client is connected
 redisClient.on("error", (err) => {
   console.error("Redis error: ", err);
