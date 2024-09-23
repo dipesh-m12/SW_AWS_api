@@ -9,10 +9,71 @@ const keysModel = require("./models/keysModel");
 const menuRouter = require("./routes/menuCacheRouter");
 const statusCacheRouter = require("./routes/goLiveRouter");
 const redis = require("redis");
+const client = require("prom-client");
+const responseTime = require("response-time");
+
 const redisClient = redis.createClient({});
 redisClient.connect().catch(console.error); // Ensure the client is connected
 redisClient.on("error", (err) => {
   console.error("Redis error: ", err);
+});
+
+const { createLogger, transports } = require("winston");
+const LokiTransport = require("winston-loki");
+const options = {
+  transports: [
+    new LokiTransport({
+      labels: { appName: "express" },
+      host: "http://127.0.0.1:3100",
+    }),
+  ],
+};
+const logger = createLogger(options);
+
+const collectDefaultMetrics = client.collectDefaultMetrics;
+collectDefaultMetrics({ register: client.register });
+
+const reqResTime = new client.Histogram({
+  name: "http_express_req_res_time",
+  help: "This tells how much time is taken by req and res",
+  labelNames: ["method", "route", "status_code"],
+  buckets: [1, 50, 100, 200, 400, 500, 800, 1000, 2000],
+});
+
+const totalReqCounter = new client.Counter({
+  name: "total_req",
+  help: "Tells total req",
+});
+
+const rpsCounter = new client.Counter({
+  name: "requests_per_second",
+  help: "Requests handled per second",
+  labelNames: ["method", "route", "status_code"],
+});
+
+// Middleware to track requests per second
+app.use((req, res, next) => {
+  rpsCounter.labels(req.method, req.path, res.statusCode).inc();
+  next();
+});
+
+app.use(
+  responseTime((req, res, time) => {
+    totalReqCounter.inc();
+    reqResTime
+      .labels({
+        method: req.method,
+        route: req.url,
+        status_code: res.statusCode,
+      })
+      .observe(time);
+  })
+);
+
+app.get("/metrics", async (req, res) => {
+  res.setHeader("Content-Type", client.register.contentType);
+  const metrics = await client.register.metrics();
+  res.send(metrics);
 });
 
 mongoose
@@ -36,6 +97,7 @@ app.get("/", async (req, res) => {
   try {
     // const res = await redisClient.get("cache");
     const result = await redisClient.get("user-session:123");
+    console.log("Received");
     res.send("Done").status(200);
   } catch (e) {
     res.send("error").status(500);
@@ -54,11 +116,12 @@ app.post("/create-order", async (req, res) => {
       const cachedData = await redisClient.get(key);
       if (cachedData) {
         data = JSON.parse(cachedData);
-        console.log("Cache hit");
+        console.log("keys Cache hit");
       } else {
-        console.log("Cache miss");
+        console.log("keys Cache miss");
         // Fetch from database if not in cache
         data = await keysModel.findOne({ canteenId });
+        console.log("Cached key", data);
         // Cache the data for 2 hours
         await redisClient.setEx(key, 7 * 3600, JSON.stringify(data));
       }
@@ -107,6 +170,7 @@ const io = socket(server, {
     origin: "*", //all
     credentials: true,
   },
+  transports: ["websocket"],
 });
 
 io.on("connection", (socket) => {
