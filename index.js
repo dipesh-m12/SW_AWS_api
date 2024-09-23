@@ -57,6 +57,34 @@ app.use((req, res, next) => {
   next();
 });
 
+const errorCounter = new client.Counter({
+  name: "http_errors_total",
+  help: "Total number of HTTP errors",
+  labelNames: ["method", "route", "status_code"],
+});
+
+app.use((req, res, next) => {
+  res.on("finish", () => {
+    if (res.statusCode >= 400) {
+      errorCounter.labels(req.method, req.path, res.statusCode).inc();
+    }
+  });
+  next();
+});
+
+const rateLimit = require("express-rate-limit");
+
+// Create a rate limiter
+const limiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: "Too many requests from this IP, please try again later.",
+  headers: true, // Include rate limit info in the response headers
+});
+
+// Apply the rate limiter to all requests
+app.use(limiter);
+
 app.use(
   responseTime((req, res, time) => {
     totalReqCounter.inc();
@@ -69,6 +97,11 @@ app.use(
       .observe(time);
   })
 );
+
+const activeConnectionsGauge = new client.Gauge({
+  name: "active_connections",
+  help: "Current number of active connections",
+});
 
 app.get("/metrics", async (req, res) => {
   res.setHeader("Content-Type", client.register.contentType);
@@ -175,7 +208,7 @@ const io = socket(server, {
 
 io.on("connection", (socket) => {
   console.log("User connected with socket ID:", socket.id);
-
+  activeConnectionsGauge.inc();
   // Add or update user with new socket ID
   socket.on("add-user", async (userId) => {
     try {
@@ -217,6 +250,7 @@ io.on("connection", (socket) => {
 
   // Handle user disconnection
   socket.on("disconnect", async () => {
+    activeConnectionsGauge.dec();
     console.log("A user disconnected with socket ID:", socket.id);
     try {
       // Find user ID associated with the socket ID
