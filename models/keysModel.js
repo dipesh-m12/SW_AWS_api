@@ -5,7 +5,7 @@ const KeySchema = mongoose.Schema(
     canteenId: {
       type: String,
     },
-    pulicKey: {
+    publicKey: {
       type: String,
     },
     privateKey: {

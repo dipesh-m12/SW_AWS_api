@@ -8,6 +8,7 @@ const mongoose = require("mongoose");
 const keysModel = require("./models/keysModel");
 const menuRouter = require("./routes/menuCacheRouter");
 const statusCacheRouter = require("./routes/goLiveRouter");
+const tokenRouter = require("./routes/tokenRouter");
 const redis = require("redis");
 const client = require("prom-client");
 const responseTime = require("response-time");
@@ -137,6 +138,7 @@ app.use(cors());
 app.use(express.json());
 app.use("/api/cacheMenu", menuRouter);
 app.use("/api/cacheStatus", statusCacheRouter);
+app.use("/api/expotokens", tokenRouter);
 
 app.get("/", async (req, res) => {
   // console.log("Dipesh");
@@ -184,8 +186,9 @@ app.post("/create-order", async (req, res) => {
     }
 
     // Initialize Razorpay
+    console.log(data.publicKey);
     const razorpay = new Razorpay({
-      key_id: data.pulicKey,
+      key_id: data.publicKey,
       key_secret: data.privateKey,
     });
 
@@ -201,7 +204,7 @@ app.post("/create-order", async (req, res) => {
       id: order.id,
       currency: order.currency,
       amount: order.amount,
-      publicKey: data.pulicKey,
+      publicKey: data.publicKey,
     });
   } catch (error) {
     console.error("Error creating order:", error);
@@ -226,12 +229,27 @@ const io = socket(server, {
 io.on("connection", (socket) => {
   console.log("User connected with socket ID:", socket.id);
   activeConnectionsGauge.inc();
+
   // Add or update user with new socket ID
   socket.on("add-user", async (userId) => {
     try {
-      // Store the socket ID with a TTL
-      await redisClient.setEx(`sockets:${userId}`, 3600 * 7, socket.id); // Store userId to socket mapping
-      await redisClient.setEx(`socket-to-user:${socket.id}`, 3600 * 7, userId); // Store socketId to user mapping
+      // Retrieve the existing list of socket IDs
+      const existingSockets = await redisClient.get(`sockets:${userId}`);
+      let socketList = existingSockets ? JSON.parse(existingSockets) : [];
+
+      // Avoid duplicate socket IDs
+      if (!socketList.includes(socket.id)) {
+        socketList.push(socket.id);
+        // Save the updated list back to Redis
+        await redisClient.set(`sockets:${userId}`, JSON.stringify(socketList));
+      }
+
+      // Map socket ID to user ID
+      const userMapping = await redisClient.get(`socket-to-user:${socket.id}`);
+      if (!userMapping) {
+        await redisClient.set(`socket-to-user:${socket.id}`, userId);
+      }
+
       console.log(`User ${userId} connected with socket ${socket.id}`);
     } catch (error) {
       console.error("Error adding user to Redis:", error);
@@ -241,27 +259,23 @@ io.on("connection", (socket) => {
   // Listen for the 'new-order' event emitted by the client
   socket.on("new-order", async ({ canteenId, order }) => {
     try {
-      // Retrieve the socket ID for the canteen from Redis
-      const canteenSocketId = await redisClient.get(`sockets:${canteenId}`);
-      if (canteenSocketId) {
-        // Emit the new order to the canteen's socket ID
-        socket.to(canteenSocketId).emit("order-received", order);
-        console.log(`Order sent to canteen with socket ID: ${canteenSocketId}`);
+      // Retrieve the list of socket IDs for the canteen
+      const existingSockets = await redisClient.get(`sockets:${canteenId}`);
+      const canteenSocketList = existingSockets
+        ? JSON.parse(existingSockets)
+        : [];
+
+      if (canteenSocketList.length > 0) {
+        // Emit the order to all sockets in the list
+        canteenSocketList.forEach((canteenSocketId) => {
+          socket.to(canteenSocketId).emit("order-received", order);
+        });
+        console.log(`Order sent to canteen sockets: ${canteenSocketList}`);
       } else {
-        console.log("No socket found for the canteen ID:", canteenId);
+        console.log("No sockets found for the canteen ID:", canteenId);
       }
     } catch (error) {
       console.error("Error sending new order to canteen:", error);
-    }
-  });
-
-  socket.on("cus", async ({ canteenId, data }) => {
-    try {
-      console.log(canteenId, data);
-      let id = await redisClient.get(`sockets:${canteenId}`);
-      socket.to(id).emit("rec", data);
-    } catch (e) {
-      console.log(e);
     }
   });
 
@@ -270,11 +284,28 @@ io.on("connection", (socket) => {
     activeConnectionsGauge.dec();
     console.log("A user disconnected with socket ID:", socket.id);
     try {
-      // Find user ID associated with the socket ID
+      // Find the user ID associated with the socket ID
       const userId = await redisClient.get(`socket-to-user:${socket.id}`);
       if (userId) {
-        // Remove the user's mapping from Redis
-        await redisClient.del(`sockets:${userId}`);
+        // Retrieve the list of socket IDs for the user
+        const existingSockets = await redisClient.get(`sockets:${userId}`);
+        let socketList = existingSockets ? JSON.parse(existingSockets) : [];
+
+        // Remove the disconnected socket ID
+        socketList = socketList.filter((id) => id !== socket.id);
+
+        if (socketList.length > 0) {
+          // Update the list in Redis
+          await redisClient.set(
+            `sockets:${userId}`,
+            JSON.stringify(socketList)
+          );
+        } else {
+          // Remove the key if the list is empty
+          await redisClient.del(`sockets:${userId}`);
+        }
+
+        // Remove the socket-to-user mapping
         await redisClient.del(`socket-to-user:${socket.id}`);
         console.log(`Socket ${socket.id} removed for user ${userId}`);
       }
@@ -283,3 +314,13 @@ io.on("connection", (socket) => {
     }
   });
 });
+
+// socket.on("cus", async ({ canteenId, data }) => {
+//   try {
+//     console.log(canteenId, data);
+//     let id = await redisClient.get(`sockets:${canteenId}`);
+//     socket.to(id).emit("rec", data);
+//   } catch (e) {
+//     console.log(e);
+//   }
+// });
