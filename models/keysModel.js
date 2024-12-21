@@ -11,6 +11,9 @@ const KeySchema = mongoose.Schema(
     privateKey: {
       type: String,
     },
+    platform: {
+      type: String,
+    },
   },
   {
     timestamps: true,

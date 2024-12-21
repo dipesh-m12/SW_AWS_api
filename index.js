@@ -153,9 +153,85 @@ app.get("/", async (req, res) => {
   }
 });
 
+app.post("/verify-order/cashfree", async (req, res) => {
+  const { canteenId, orderId } = req.body;
+
+  if (!canteenId || !orderId) {
+    return res
+      .status(400)
+      .json({ error: "canteenId and orderId are required" });
+  }
+  const key = `keys:${canteenId}`;
+  let data;
+
+  // Check cache first
+  try {
+    const cachedData = await redisClient.get(key);
+    if (cachedData) {
+      data = JSON.parse(cachedData);
+      cacheHitCounter.labels(req.path).inc(); // Increment cache hit counter
+      console.log("keys Cache hit");
+    } else {
+      console.log("keys Cache miss");
+      cacheMissCounter.labels(req.path).inc(); // Increment cache miss counter
+      // Fetch from database if not in cache
+      data = await keysModel.findOne({ canteenId });
+      console.log("Cached key", data);
+      // Cache the data for 2 hours
+      await redisClient.setEx(key, 7 * 3600, JSON.stringify(data));
+    }
+  } catch (redisError) {
+    console.error("Redis error:", redisError);
+    // Fallback to DB fetch if cache operation fails
+    data = await keysModel.findOne({ canteenId });
+  }
+
+  if (!data) {
+    return res.status(404).send("Canteen not found");
+  }
+  console.log(
+    `Received request for canteenId: ${canteenId}, orderId: ${orderId}`
+  );
+  try {
+    const response = await fetch(
+      `https://sandbox.cashfree.com/pg/orders/${orderId}`,
+      {
+        method: "GET",
+        headers: {
+          "x-client-id": data.publicKey,
+          "x-client-secret": data.privateKey,
+          "x-api-version": "2023-08-01",
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Error response from Cashfree API:", errorText);
+      return res
+        .status(response.status)
+        .json({ error: "Failed to fetch order details", details: errorText });
+    }
+
+    const result = await response.json();
+    console.log("Cashfree API Response:", result.order_status, result);
+
+    res.status(200).json({
+      message: "Order details fetched successfully",
+      data: result,
+      status: result.order_status,
+    });
+  } catch (error) {
+    console.error("Error during Cashfree API request:", error);
+    res
+      .status(500)
+      .json({ error: "Internal Server Error", details: error.message });
+  }
+});
+
 app.post("/create-order", async (req, res) => {
   try {
-    const { amount, canteenId } = req.body;
+    const { amount, canteenId, user, description } = req.body;
     const key = `keys:${canteenId}`;
     let data;
 
@@ -186,26 +262,56 @@ app.post("/create-order", async (req, res) => {
     }
 
     // Initialize Razorpay
-    console.log(data.publicKey);
-    const razorpay = new Razorpay({
-      key_id: data.publicKey,
-      key_secret: data.privateKey,
-    });
+    if (data.platform === "razorpay") {
+      const razorpay = new Razorpay({
+        key_id: data.publicKey,
+        key_secret: data.privateKey,
+      });
 
-    // Create an order
-    const order = await razorpay.orders.create({
-      amount: amount * 100, // Amount in paise
-      currency: "INR",
-      receipt: `order_${Math.random()}`,
-    });
+      // Create an order
+      const order = await razorpay.orders.create({
+        amount: amount * 100, // Amount in paise
+        currency: "INR",
+        receipt: `order_${Math.random()}`,
+      });
 
-    // Send response
-    res.json({
-      id: order.id,
-      currency: order.currency,
-      amount: order.amount,
-      publicKey: data.publicKey,
-    });
+      // Send response
+      return res.json({
+        id: order.id,
+        currency: order.currency,
+        amount: order.amount,
+        publicKey: data.publicKey,
+        platform: data.platform,
+      });
+    } else if (data.platform === "cashfree") {
+      const response = await fetch("https://sandbox.cashfree.com/pg/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-client-id": data.publicKey,
+          "x-client-secret": data.privateKey,
+          "x-api-version": "2023-08-01",
+        },
+        body: JSON.stringify({
+          order_amount: amount,
+          order_id: `order_${Date.now()}`,
+          order_currency: "INR",
+          customer_details: {
+            customer_id: user.userId,
+            customer_name: user.name,
+            customer_email: user.email,
+            customer_phone: "9999999999",
+          },
+          order_meta: {
+            notify_url: "https://test.cashfree.com",
+          },
+          order_note: description || "Food order payment",
+        }),
+      });
+      let cashfreeData = await response.json();
+      cashfreeData = { cashfreeData, platform: "cashfree" };
+      return res.status(response.status).json(cashfreeData);
+    }
   } catch (error) {
     console.error("Error creating order:", error);
     res.status(500).send("Error creating order");
